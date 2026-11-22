@@ -29,6 +29,7 @@ import {
   isEvmChainId,
   minimumEvmAmount,
   minimumForwardedAmount,
+  minimumWrapperAmount,
   planEvmFee,
   planWrapperFee,
   solanaAddressToBytes32,
@@ -486,9 +487,10 @@ export function createService(deps: Deps, now: () => number = Date.now) {
           sourceName: SOURCE_NAME(from),
         })
       : planEvmFee({ amount: units, tier, destination });
-    const floor = suggestedEvmMinimum(minimumEvmAmount(tier));
-    const minimum =
-      wrapper && wrapper.terms.minTransfer > floor ? wrapper.terms.minTransfer : floor;
+    // The figure the page names under the amount field, so a refusal here reads the same there.
+    const minimum = suggestedEvmMinimum(
+      wrapper ? minimumWrapperAmount(tier, wrapper.terms) : minimumEvmAmount(tier),
+    );
     if (!plan.ok) {
       const code =
         plan.kind === "minimum"
@@ -1199,6 +1201,7 @@ export function createService(deps: Deps, now: () => number = Date.now) {
         { have: balance, need: r.amount + ARC_GAS_RESERVE_UNITS },
       );
     }
+    const nowSecs = Math.floor(now() / 1000);
     const steps = buildEvmBridge({
       source,
       from: sender,
@@ -1213,7 +1216,8 @@ export function createService(deps: Deps, now: () => number = Date.now) {
       allowance,
       // The wrapper refuses a request past its deadline, and one more than an hour out. Half an
       // hour leaves room for an approval to confirm first.
-      deadline: via ? BigInt(Math.floor(now() / 1000) + WRAPPER_DEADLINE_SECS) : 0n,
+      deadline: via ? BigInt(nowSecs + WRAPPER_DEADLINE_SECS) : 0n,
+      now: nowSecs,
     }).map((step) =>
       // Circle's fee is fixed into the burn when it is built. If an approval comes first and takes
       // longer than the quote lasts, build again: the approval stands, and the burn is re-priced.
