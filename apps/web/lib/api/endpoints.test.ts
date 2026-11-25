@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { IrisUnavailable } from "@xebra/cctp-client";
 import {
   ClaimBuildSchema,
   ERROR_CODES,
@@ -18,6 +19,7 @@ import {
   POST as catchAllPost,
   PUT as catchAllPut,
 } from "../../app/v1/[[...rest]]/route";
+import { OPEN_GUARD } from "./auth";
 import type { Deps } from "./deps";
 import { endpoints } from "./endpoints";
 import { ApiError } from "./errors";
@@ -38,7 +40,7 @@ import { createService } from "./service";
 const BASE = "https://api.xebra.exchange/v1";
 
 function api(over: Partial<Deps> = {}) {
-  return endpoints(createService(deps({ build: buildDeps(), ...over })));
+  return endpoints(createService(deps({ build: buildDeps(), ...over })), OPEN_GUARD);
 }
 
 const get = (path: string) => new Request(`${BASE}${path}`);
@@ -159,6 +161,7 @@ describe("quoting Solana", () => {
           }),
         }),
       ),
+      OPEN_GUARD,
     );
     const res = await v1.quote(
       get(`/quote?from=stellar&to=solana&amount=10&recipient=${SOLANA_WALLET}`),
@@ -284,6 +287,33 @@ describe("failures on our side", () => {
     );
     expect(res.status).toBe(503);
     expect(res.headers.get("retry-after")).toBe("10");
+    expect((await problemOf(res)).code).toBe("upstream_unavailable");
+  });
+
+  it("answers 503 with the Iris hold duration when the budget is blocking", async () => {
+    const res = await api({
+      circle: async () => {
+        throw new IrisUnavailable("rate_limited", 330_000);
+      },
+    }).quote(get("/quote?from=stellar&to=base&amount=10"));
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("330");
+    expect((await problemOf(res)).code).toBe("upstream_unavailable");
+  });
+
+  it("answers 503 with the hold the health check reports, the way production sees it", async () => {
+    // The live `circle()` goes through /api/circle-health, which turns a hold into a result with no
+    // quote and a blocked budget instead of throwing.
+    const blocked = health({ quote: null });
+    const res = await api({
+      circle: async () => ({
+        ...blocked,
+        status: "degraded",
+        budget: { ...blocked.budget, blockedUntil: Date.now() + 330_000 },
+      }),
+    }).quote(get("/quote?from=stellar&to=base&amount=10"));
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("330");
     expect((await problemOf(res)).code).toBe("upstream_unavailable");
   });
 
